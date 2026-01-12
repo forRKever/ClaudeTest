@@ -1,0 +1,15 @@
+<RCC>
+    <qresource prefix="/">
+        <file>PICS/play.png</file>
+        <file>PICS/fast.png</file>
+        <file>PICS/next.png</file>
+        <file>PICS/pause.png</file>
+        <file>PICS/pre.png</file>
+        <file>PICS/slow.png</file>
+        <file>PICS/snap.png</file>
+        <file>PICS/stop.png</file>
+        <file>PICS/shinsoft.ico</file>
+        <file>PICS/voice.png</file>
+        <file>PICS/mute.png</file>
+    </qresource>
+</RCC>
