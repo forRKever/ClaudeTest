@@ -78,3 +78,11 @@ SDK/                         # PlayM4 SDK binaries and headers
 - Snapshots captured via `PlayM4_GetBMP()` / `PlayM4_GetJPEG()` to memory buffer, then written to file
 - Watermark callback extracts binary data: globalTime (DWORD), deviceSN (DWORD), MAC (6 bytes), deviceType, deviceInfo, channelNum
 - UI form defined in `PlayerDialog.ui`, compiled by Qt's uic tool
+
+### RTSP Streaming
+
+- Stream playback via File > Open URL (Ctrl+U)
+- Uses FFmpeg externally to capture RTSP streams and convert to raw H.264
+- `RtspStreamThread` handles FFmpeg process and feeds data to `PlayM4_InputData()`
+- Stream mode uses `PlayM4_OpenStream()` / `PlayM4_CloseStream()` instead of file APIs
+- Requires FFmpeg installed and available in system PATH

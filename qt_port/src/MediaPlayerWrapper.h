@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QPointer>
 #include <QMutex>
+#include <QThread>
+#include <QTcpSocket>
 #include <Windows.h>
 
 // Include PlayM4 SDK headers
@@ -65,6 +67,12 @@ public:
     // File operations
     bool openFile(const QString &filePath);
     void closeFile();
+
+    // Stream operations
+    bool openStream(const QString &url);
+    void closeStream();
+    bool inputStreamData(PBYTE pBuf, DWORD nSize);
+    bool isStreamMode() const { return m_bStreamMode; }
 
     // Playback control
     bool play(HWND displayWnd = nullptr);
@@ -134,6 +142,8 @@ signals:
     void errorOccurred(const QString &error);
     void positionChanged(float position);
     void fileRefCreated();
+    void streamOpened();
+    void streamError(const QString &error);
 
 public slots:
     void onFileRefCreated();
@@ -143,7 +153,10 @@ private:
     PlayState m_playState;
     bool m_bInitialized;
     bool m_bFileOpened;
+    bool m_bStreamMode;
+    bool m_bStreamOpened;
     QString m_currentFile;
+    QString m_streamUrl;
     HWND m_displayWnd;
     float m_currentSpeed;
     QString m_lastSnapshotPath;

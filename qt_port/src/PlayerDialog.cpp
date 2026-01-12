@@ -36,11 +36,13 @@ PlayerDialog::PlayerDialog(QWidget *parent)
     , m_menuBar(nullptr)
     , m_statusBar(nullptr)
     , m_actionOpen(nullptr)
+    , m_actionOpenURL(nullptr)
     , m_actionExit(nullptr)
     , m_actionGroupPicFormat(nullptr)
     , m_actionSetPath(nullptr)
     , m_actionAbout(nullptr)
     , m_actionWatermark(nullptr)
+    , m_rtspThread(nullptr)
     , m_actionPrev(nullptr)
     , m_actionPlayPause(nullptr)
     , m_actionStop(nullptr)
@@ -109,6 +111,13 @@ PlayerDialog::~PlayerDialog()
         m_posTimer->stop();
     }
     
+    if (m_rtspThread) {
+        m_rtspThread->stopStream();
+        m_rtspThread->wait(3000);
+        delete m_rtspThread;
+        m_rtspThread = nullptr;
+    }
+
     if (m_mediaPlayer) {
         m_mediaPlayer->cleanup();
     }
@@ -283,10 +292,22 @@ void PlayerDialog::onPauseClicked()
 void PlayerDialog::onStopClicked()
 {
     qDebug() << "Stop clicked";
-    
+
+    // Stop RTSP stream if active
+    if (m_rtspThread) {
+        m_rtspThread->stopStream();
+        m_rtspThread->wait(3000);
+        delete m_rtspThread;
+        m_rtspThread = nullptr;
+    }
+
     if (m_mediaPlayer) {
         m_mediaPlayer->stopSound();
-        m_mediaPlayer->stop();
+        if (m_mediaPlayer->isStreamMode()) {
+            m_mediaPlayer->closeStream();
+        } else {
+            m_mediaPlayer->stop();
+        }
         m_playTimer->stop();
         m_posTimer->stop();
         m_watermarkDlg->m_setTimer(false);
@@ -311,6 +332,7 @@ void PlayerDialog::setupMenus()
     // Create menu bar
     m_menuBar = ui->menubar;//menuBar();
     m_actionOpen = ui->actionOpen;
+    m_actionOpenURL = ui->actionOpenURL;
     m_actionExit = ui->actionExit;
     m_actionSetPath = ui->actionSet_Cap_Pic_Path;
     m_actionAbout = ui->actionAbout;
@@ -318,6 +340,7 @@ void PlayerDialog::setupMenus()
     m_actionWatermark = ui->actionWatermark;
 
     connect(m_actionOpen, &QAction::triggered, this, &PlayerDialog::onActionOpen);
+    connect(m_actionOpenURL, &QAction::triggered, this, &PlayerDialog::onActionOpenURL);
     connect(m_actionExit, &QAction::triggered, this, &PlayerDialog::onActionExit);
     connect(m_actionSetPath, &QAction::triggered, this, &PlayerDialog::onActionSetPath);
     connect(m_actionAbout, &QAction::triggered, this, &PlayerDialog::onAcionAbout);
@@ -758,6 +781,83 @@ void PlayerDialog::onActionOpen()
     }
 }
 
+void PlayerDialog::onActionOpenURL()
+{
+    qDebug() << "Action Open URL triggered";
+
+    if (!m_mediaPlayer) {
+        return;
+    }
+
+    bool ok;
+    QString url = QInputDialog::getText(this,
+        "Open URL",
+        "Enter RTSP/HTTP stream URL:",
+        QLineEdit::Normal,
+        m_currentStreamUrl.isEmpty() ? "rtsp://" : m_currentStreamUrl,
+        &ok);
+
+    if (!ok || url.isEmpty()) {
+        return;
+    }
+
+    // Stop current playback if any
+    if (m_rtspThread) {
+        m_rtspThread->stopStream();
+        m_rtspThread->wait(3000);
+        delete m_rtspThread;
+        m_rtspThread = nullptr;
+    }
+
+    if (m_mediaPlayer->isPlaying() || m_mediaPlayer->isStep()) {
+        m_mediaPlayer->stopSound();
+        m_mediaPlayer->stop();
+        m_watermarkDlg->m_setTimer(false);
+        m_playTimer->stop();
+        m_posTimer->stop();
+    }
+
+    m_currentStreamUrl = url;
+    m_statusBar->showMessage("Connecting to stream...");
+
+    // Open stream in MediaPlayerWrapper
+    if (!m_mediaPlayer->openStream(url)) {
+        QMessageBox::critical(this, "Stream Error", "Failed to initialize stream playback.");
+        m_statusBar->showMessage("Failed to open stream");
+        return;
+    }
+
+    // Create and start RTSP thread
+    m_rtspThread = new RtspStreamThread(m_mediaPlayer, url, this);
+
+    connect(m_rtspThread, &RtspStreamThread::streamStarted, this, [this]() {
+        qDebug() << "Stream started";
+        m_statusBar->showMessage("Stream connected");
+        this->setWindowTitle(m_currentStreamUrl);
+
+        // Start playback
+        HWND displayWnd = m_videoDisplayWidget ?
+            reinterpret_cast<HWND>(m_videoDisplayWidget->winId()) :
+            reinterpret_cast<HWND>(winId());
+        m_mediaPlayer->play(displayWnd);
+        m_mediaPlayer->playSound();
+        m_playTimer->start(500);
+    });
+
+    connect(m_rtspThread, &RtspStreamThread::streamError, this, [this](const QString &error) {
+        qDebug() << "Stream error:" << error;
+        m_statusBar->showMessage("Stream error: " + error);
+        QMessageBox::warning(this, "Stream Error", error);
+    });
+
+    connect(m_rtspThread, &RtspStreamThread::streamStopped, this, [this]() {
+        qDebug() << "Stream stopped";
+        m_statusBar->showMessage("Stream disconnected");
+    });
+
+    m_rtspThread->start();
+}
+
 void PlayerDialog::onActionExit()
 {
     qDebug() << "Action Exit triggered";
@@ -1108,4 +1208,84 @@ void PlayerDialog::onVolumeChanged(int value)
     }
 
     updateVolumeButtonIcon();
+}
+
+// RtspStreamThread implementation
+RtspStreamThread::RtspStreamThread(MediaPlayerWrapper *player, const QString &url, QObject *parent)
+    : QThread(parent)
+    , m_player(player)
+    , m_url(url)
+    , m_ffmpegProcess(nullptr)
+    , m_running(false)
+{
+}
+
+RtspStreamThread::~RtspStreamThread()
+{
+    stopStream();
+}
+
+void RtspStreamThread::stopStream()
+{
+    m_running = false;
+    if (m_ffmpegProcess) {
+        m_ffmpegProcess->terminate();
+        if (!m_ffmpegProcess->waitForFinished(3000)) {
+            m_ffmpegProcess->kill();
+        }
+    }
+}
+
+void RtspStreamThread::run()
+{
+    m_running = true;
+
+    // Use FFmpeg to capture RTSP stream and output raw H.264 data
+    m_ffmpegProcess = new QProcess();
+
+    QStringList args;
+    args << "-rtsp_transport" << "tcp"    // Use TCP for RTSP (more reliable)
+         << "-i" << m_url                  // Input URL
+         << "-c:v" << "copy"               // Copy video codec (no re-encoding)
+         << "-an"                          // Disable audio for now
+         << "-f" << "h264"                 // Output format
+         << "-";                           // Output to stdout
+
+    m_ffmpegProcess->start("ffmpeg", args);
+
+    if (!m_ffmpegProcess->waitForStarted(5000)) {
+        emit streamError("Failed to start FFmpeg. Please ensure FFmpeg is installed and in PATH.");
+        delete m_ffmpegProcess;
+        m_ffmpegProcess = nullptr;
+        return;
+    }
+
+    emit streamStarted();
+
+    // Read data from FFmpeg and feed to PlayM4
+    while (m_running && m_ffmpegProcess->state() == QProcess::Running) {
+        if (m_ffmpegProcess->waitForReadyRead(100)) {
+            QByteArray data = m_ffmpegProcess->readAllStandardOutput();
+            if (!data.isEmpty() && m_player) {
+                m_player->inputStreamData(reinterpret_cast<PBYTE>(data.data()),
+                                          static_cast<DWORD>(data.size()));
+            }
+        }
+
+        // Check for errors
+        QByteArray errorData = m_ffmpegProcess->readAllStandardError();
+        if (!errorData.isEmpty()) {
+            QString errorStr = QString::fromLocal8Bit(errorData);
+            if (errorStr.contains("error", Qt::CaseInsensitive) ||
+                errorStr.contains("failed", Qt::CaseInsensitive)) {
+                qDebug() << "FFmpeg error:" << errorStr;
+            }
+        }
+    }
+
+    m_ffmpegProcess->waitForFinished(1000);
+    delete m_ffmpegProcess;
+    m_ffmpegProcess = nullptr;
+
+    emit streamStopped();
 }

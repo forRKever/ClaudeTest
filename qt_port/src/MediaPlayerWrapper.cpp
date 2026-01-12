@@ -10,6 +10,8 @@ MediaPlayerWrapper::MediaPlayerWrapper(QObject *parent)
     , m_playState(Stopped)
     , m_bInitialized(false)
     , m_bFileOpened(false)
+    , m_bStreamMode(false)
+    , m_bStreamOpened(false)
     , m_displayWnd(nullptr)
     , m_currentSpeed(1.0f)
 {
@@ -48,10 +50,14 @@ bool MediaPlayerWrapper::initialize()
 
 void MediaPlayerWrapper::cleanup()
 {
+    if (m_bStreamOpened) {
+        closeStream();
+    }
+
     if (m_bFileOpened) {
         closeFile();
     }
-    
+
     if (m_bInitialized) {
         NAME(PlayM4_RealeseDDraw)();
         m_bInitialized = false;
@@ -182,20 +188,101 @@ void MediaPlayerWrapper::closeFile()
     }
 
     stop();
-    
+
     NAME(PlayM4_CloseFile)(m_lPort);
     releasePort();
-    
+
     m_bFileOpened = false;
+    m_bStreamMode = false;
     m_currentFile.clear();
-    
+
     emit statusChanged(Stopped);
+}
+
+bool MediaPlayerWrapper::openStream(const QString &url)
+{
+    if (m_bStreamOpened) {
+        closeStream();
+    }
+
+    if (m_bFileOpened) {
+        closeFile();
+    }
+
+    if (!getPort()) {
+        return false;
+    }
+
+    // Set stream open mode to real-time
+    if (!NAME(PlayM4_SetStreamOpenMode)(m_lPort, STREAME_REALTIME)) {
+        DWORD error = NAME(PlayM4_GetLastError)(m_lPort);
+        qDebug() << "Failed to set stream open mode:" << getErrorString(error);
+        releasePort();
+        return false;
+    }
+
+    // Open stream with empty header (will be filled when data arrives)
+    // Buffer pool size: 2MB for real-time streaming
+    if (!NAME(PlayM4_OpenStream)(m_lPort, nullptr, 0, 2 * 1024 * 1024)) {
+        DWORD error = NAME(PlayM4_GetLastError)(m_lPort);
+        QString errorMsg = QString("Failed to open stream: %1").arg(getErrorString(error));
+        emit streamError(errorMsg);
+        releasePort();
+        return false;
+    }
+
+    m_streamUrl = url;
+    m_bStreamOpened = true;
+    m_bStreamMode = true;
+    m_bFileOpened = true;  // Mark as "file opened" for playback compatibility
+
+    qDebug() << "Stream opened successfully for URL:" << url;
+    emit streamOpened();
+    emit statusChanged(Stopped);
+
+    return true;
+}
+
+void MediaPlayerWrapper::closeStream()
+{
+    if (!m_bStreamOpened) {
+        return;
+    }
+
+    stop();
+
+    NAME(PlayM4_CloseStream)(m_lPort);
+    releasePort();
+
+    m_bStreamOpened = false;
+    m_bStreamMode = false;
+    m_bFileOpened = false;
+    m_streamUrl.clear();
+
+    emit statusChanged(Stopped);
+}
+
+bool MediaPlayerWrapper::inputStreamData(PBYTE pBuf, DWORD nSize)
+{
+    if (!m_bStreamOpened || m_lPort < 0) {
+        return false;
+    }
+
+    if (!NAME(PlayM4_InputData)(m_lPort, pBuf, nSize)) {
+        DWORD error = NAME(PlayM4_GetLastError)(m_lPort);
+        if (error != PLAYM4_BUF_OVER) {  // Ignore buffer overflow warnings
+            qDebug() << "Failed to input stream data:" << getErrorString(error);
+        }
+        return false;
+    }
+
+    return true;
 }
 
 bool MediaPlayerWrapper::play(HWND displayWnd)
 {
-    if (!m_bFileOpened) {
-        emit errorOccurred("No file opened");
+    if (!m_bFileOpened && !m_bStreamOpened) {
+        emit errorOccurred("No file or stream opened");
         return false;
     }
 

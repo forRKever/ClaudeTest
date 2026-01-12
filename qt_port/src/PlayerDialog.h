@@ -16,7 +16,11 @@
 #include <QLabel>
 #include <QVector>
 #include <QDateTime>
+#include <QInputDialog>
+#include <QProcess>
 #include "watermarkdialog.h"
+
+class RtspStreamThread;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class PlayerDialog; }
@@ -75,6 +79,7 @@ private slots:
     
     // Menu slots
     void onActionOpen();
+    void onActionOpenURL();
     void onActionExit();
     void onActionSetPath();
     void onAcionAbout();
@@ -147,6 +152,7 @@ private:
     
     // Menu actions
     QAction *m_actionOpen;
+    QAction *m_actionOpenURL;
     QAction *m_actionExit;
     QActionGroup *m_actionGroupPicFormat;
     QAction *m_actionSetPath;
@@ -184,6 +190,36 @@ private:
 
     //Watermark dialog
     WatermarkDialog *m_watermarkDlg;
+
+    // RTSP streaming
+    RtspStreamThread *m_rtspThread;
+    QString m_currentStreamUrl;
+};
+
+// RTSP Stream Thread for handling network streaming
+class RtspStreamThread : public QThread
+{
+    Q_OBJECT
+
+public:
+    explicit RtspStreamThread(class MediaPlayerWrapper *player, const QString &url, QObject *parent = nullptr);
+    ~RtspStreamThread();
+
+    void stopStream();
+
+signals:
+    void streamStarted();
+    void streamError(const QString &error);
+    void streamStopped();
+
+protected:
+    void run() override;
+
+private:
+    class MediaPlayerWrapper *m_player;
+    QString m_url;
+    QProcess *m_ffmpegProcess;
+    volatile bool m_running;
 };
 
 #endif // PLAYERDIALOG_H

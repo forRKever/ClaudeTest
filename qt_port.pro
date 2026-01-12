@@ -1,4 +1,4 @@
-QT += core widgets
+QT += core widgets network
 
 CONFIG += c++11
 RC_FILE = ExeIcon.rc
